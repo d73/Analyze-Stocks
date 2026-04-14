@@ -466,7 +466,7 @@ def fetch_market_indicators() -> list[dict]:
 if __name__ == "__main__":
     print(f"\nFetching technicals for: {', '.join(TICKERS)}\n")
     data = fetch_ticker_data(TICKERS)
-    f_tickers = "output-tickers.json"
+    f_tickers = "output/tickers.json"
     with open(f_tickers, "w") as f:
         json.dump(data, f, indent=2, default=str)
     print(f"\nSaved to {f_tickers}")
@@ -474,7 +474,7 @@ if __name__ == "__main__":
 
     print(f"\nFetching market indicators\n")
     data = fetch_market_indicators()
-    f_market = "output-market.json"
+    f_market = "output/market.json"
     with open(f_market, "w") as f:
         json.dump(data, f, indent=2, default=str)
     print(f"\nSaved to {f_market}")
