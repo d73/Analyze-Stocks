@@ -1,13 +1,26 @@
 import json
 import os
+import sys
 from datetime import date
 
+TICKERS = sorted(set(t.replace(".", "-") for t in sys.argv[1:]))
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "output")
+
+
+def _v(val, default=0):
+    """Return val if not None, else default. Prevents TypeError on missing data."""
+    return default if val is None else val
 
 
 def load_market_data() -> dict:
     with open(os.path.join(OUTPUT_DIR, "market.json")) as f:
         return json.load(f)[0]
+
+
+def load_tickers_data() -> dict[str, dict]:
+    with open(os.path.join(OUTPUT_DIR, "tickers.json")) as f:
+        rows = json.load(f)
+    return {row["ticker"]: row for row in rows}
 
 
 def calculate_regime_score(market: dict) -> dict:
@@ -72,10 +85,10 @@ def score_ticker_trend(ticker: dict) -> dict:
         <10   → weak / avoid
     """
     components = {
-        "above_200d_sma":    (ticker["price_vs_200d_sma_pct"] > 0, 10),
-        "200d_sma_rising":   (ticker["sma_200d_direction"] == "up", 5),
-        "above_50d_sma":     (ticker["price_vs_50d_sma_pct"] > 0, 5),
-        "50d_sma_rising":    (ticker["sma_50d_direction"] == "up", 5),
+        "above_200d_sma":    (_v(ticker["price_vs_200d_sma_pct"]) > 0, 10),
+        "200d_sma_rising":   (_v(ticker["sma_200d_direction"], "") == "up", 5),
+        "above_50d_sma":     (_v(ticker["price_vs_50d_sma_pct"]) > 0, 5),
+        "50d_sma_rising":    (_v(ticker["sma_50d_direction"], "") == "up", 5),
     }
 
     score = sum(pts for passed, pts in components.values() if passed)
@@ -110,7 +123,7 @@ def score_ticker_momentum(ticker: dict) -> dict:
         +4 if macd_histogram > 0
         +2 if macd > macd_signal_line
     """
-    rsi = ticker["rsi_14"]
+    rsi = _v(ticker["rsi_14"])
 
     if 50 <= rsi <= 65:
         rsi_score = 8
@@ -122,9 +135,9 @@ def score_ticker_momentum(ticker: dict) -> dict:
         rsi_score = 0
 
     macd_components = {
-        "macd_crossover_bullish": (ticker["macd_crossover"] == "bullish", 6),
-        "macd_histogram_positive": (ticker["macd_histogram"] > 0, 4),
-        "macd_above_signal": (ticker["macd"] > ticker["macd_signal_line"], 2),
+        "macd_crossover_bullish": (_v(ticker["macd_crossover"], "") == "bullish", 6),
+        "macd_histogram_positive": (_v(ticker["macd_histogram"]) > 0, 4),
+        "macd_above_signal": (_v(ticker["macd"]) > _v(ticker["macd_signal_line"]), 2),
     }
     macd_score = sum(pts for passed, pts in macd_components.values() if passed)
 
@@ -151,7 +164,7 @@ def score_ticker_range_position(ticker: dict) -> dict:
         +2  if >80%      (extended / near highs)
          0  if <20%      (falling knife risk)
     """
-    pos = ticker["52w_range_position_pct"]
+    pos = _v(ticker["52w_range_position_pct"])
 
     if 40 <= pos <= 80:
         score = 10
@@ -179,7 +192,7 @@ def score_ticker_volume(ticker: dict) -> dict:
         +5  if 0.8–1.2  (normal volume)
          0  if < 0.8    (low volume, weak conviction)
     """
-    ratio = ticker["volume_vs_avg_ratio"]
+    ratio = _v(ticker["volume_vs_avg_ratio"])
 
     if ratio > 1.2:
         score = 10
@@ -205,7 +218,7 @@ def score_ticker_relative_strength(ticker: dict) -> dict:
         +5  if 0.98–1.02 (in-line with SPY)
          0  if < 0.98   (underperforming SPY)
     """
-    rs = ticker["rs_vs_spy_20d"]
+    rs = _v(ticker["rs_vs_spy_20d"])
 
     if rs > 1.02:
         score = 10
@@ -333,10 +346,10 @@ def decide_ticker_action(ticker: dict, today: date = None) -> dict:
     avoid_reasons = []
     exit_reasons = []
 
-    if ticker["price_vs_50d_sma_pct"] < -3 and ticker["sma_50d_direction"] == "down":
+    if _v(ticker["price_vs_50d_sma_pct"]) < -3 and _v(ticker["sma_50d_direction"], "") == "down":
         avoid_reasons.append("price below 50d SMA and SMA trending down")
 
-    if ticker["volume_vs_avg_ratio"] < 0.7:
+    if _v(ticker["volume_vs_avg_ratio"]) < 0.7:
         avoid_reasons.append("volume too low (< 0.7x avg)")
 
     earnings_str = ticker.get("earnings_date")
@@ -345,10 +358,10 @@ def decide_ticker_action(ticker: dict, today: date = None) -> dict:
         if 0 <= days_until <= 5:
             avoid_reasons.append(f"earnings in {days_until} day(s)")
 
-    if ticker["rsi_14"] > 75 and ticker["52w_range_position_pct"] > 90:
+    if _v(ticker["rsi_14"]) > 75 and _v(ticker["52w_range_position_pct"]) > 90:
         exit_reasons.append("RSI > 75 and price near 52w high (>90%)")
 
-    if ticker["macd_histogram"] < 0 and ticker["macd_crossover"] == "bearish":
+    if _v(ticker["macd_histogram"]) < 0 and _v(ticker["macd_crossover"], "") == "bearish":
         exit_reasons.append("MACD histogram turned negative (bearish crossover)")
 
     # --- resolve final action ---
@@ -421,9 +434,9 @@ def check_entry_timing(ticker: dict) -> dict:
     Momentum:  macd_crossover == "bullish"
                (proxy for crossover within last 3 days — tickers.json is point-in-time)
     """
-    pullback = -3.0 <= ticker["price_vs_50d_sma_pct"] <= -1.0
-    breakout = ticker["volume_vs_avg_ratio"] > 1.5 and ticker["pct_from_52w_high"] >= 0
-    momentum = ticker["macd_crossover"] == "bullish"
+    pullback = -3.0 <= _v(ticker["price_vs_50d_sma_pct"]) <= -1.0
+    breakout = _v(ticker["volume_vs_avg_ratio"]) > 1.5 and _v(ticker["pct_from_52w_high"]) >= 0
+    momentum = _v(ticker["macd_crossover"], "") == "bullish"
 
     triggers = {
         "pullback": pullback,
@@ -438,12 +451,90 @@ def check_entry_timing(ticker: dict) -> dict:
     }
 
 
-if __name__ == "__main__":
+def run(tickers: list[str], today: date = None) -> list[dict]:
+    """
+    Run the full decision engine for each ticker in the list.
+
+    For every ticker:
+      1. decide_ticker_action  — score + hard-rule overrides
+      2. If action is Buy or Aggressive Buy / Add:
+         - calculate_position_size  — regime-adjusted lot size
+         - check_entry_timing       — confirm a valid entry trigger exists
+    """
+    if today is None:
+        today = date.today()
+
     market = load_market_data()
-    result = calculate_regime_score(market)
-    print(f"Regime Score: {result['regime_score']} / 6")
-    for component, value in result["components"].items():
-        print(f"  {'✓' if value else '✗'} {component}")
+    all_tickers = load_tickers_data()
+
+    regime = classify_regime(calculate_regime_score(market)["regime_score"])
+    regime_label = regime["regime_label"]
+
+    BUY_ACTIONS = {"Buy", "Aggressive Buy / Add"}
+
+    results = []
+    for symbol in tickers:
+        ticker = all_tickers.get(symbol)
+        if ticker is None:
+            results.append({"ticker": symbol, "error": "not found in tickers.json"})
+            continue
+
+        decision = decide_ticker_action(ticker, today)
+        row = {
+            "ticker":        symbol,
+            "final_action":  decision["final_action"],
+            "total_score":   decision["total_score"],
+            "breakdown":     decision["breakdown"],
+        }
+
+        if decision["final_action"] in BUY_ACTIONS:
+            sizing = calculate_position_size(decision, regime_label)
+            timing = check_entry_timing(ticker)
+            row["position_size"]    = sizing["position_size"]
+            row["regime_mult"]      = sizing["regime_multiplier"]
+            row["score_mult"]       = sizing["score_multiplier"]
+            row["entry_valid"]      = timing["entry_valid"]
+            row["entry_triggers"]   = timing["triggers"]
+
+        if decision["avoid_entry_reasons"]:
+            row["avoid_entry_reasons"] = decision["avoid_entry_reasons"]
+        if decision["force_exit_reasons"]:
+            row["force_exit_reasons"] = decision["force_exit_reasons"]
+
+        results.append(row)
+
+    return results
+
+
+if __name__ == "__main__":
+    if not TICKERS:
+        print("Usage: python decision-engine.py TICKER [TICKER ...]")
+        sys.exit(1)
+
+    market = load_market_data()
+    regime_result = calculate_regime_score(market)
+    regime = classify_regime(regime_result["regime_score"])
+    print(f"Regime: {regime['regime_label']}  (score {regime_result['regime_score']}/6)\n")
+
+    for row in run(TICKERS):
+        if "error" in row:
+            print(f"{row['ticker']}: {row['error']}")
+            continue
+
+        print(f"{row['ticker']:8}  {row['final_action']:22}  score={row['total_score']}")
+
+        if "position_size" in row:
+            print(f"          position size: {row['position_size']:.4f}x  "
+                  f"(regime {row['regime_mult']}x × score {row['score_mult']}x)")
+            valid = row["entry_valid"]
+            triggers = ", ".join(k for k, v in row["entry_triggers"].items() if v) or "none"
+            print(f"          entry timing:  {'VALID' if valid else 'NO TRIGGER'}  [{triggers}]")
+
+        for reason in row.get("avoid_entry_reasons", []):
+            print(f"          ⚠ avoid: {reason}")
+        for reason in row.get("force_exit_reasons", []):
+            print(f"          ✖ force exit: {reason}")
+        print()
 
 
 # inspo https://chatgpt.com/c/69de34ad-89a8-83e8-940a-143efed96920
