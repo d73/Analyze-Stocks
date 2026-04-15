@@ -37,12 +37,12 @@ def calculate_regime_score(market: dict) -> dict:
     Returns a dict with the total score and a breakdown of each component.
     """
     components = {
-        "sp500_above_200d":   market["sp500_vs_200d_pct"] > 0,
-        "sp500_200d_uptrend": market["sp500_200d_trend"] == "up",
-        "vix_low":            market["vix"] < 20,
-        "hyg_uptrend":        market["hyg_trend"] == "up",
-        "fear_greed_ok":      market["fear_greed_score"] > 35,
-        "vvix_calm":          market["vvix_percentile"] < 70,
+        "sp500_above_200d":   _v(market.get("sp500_vs_200d_pct")) > 0,
+        "sp500_200d_uptrend": market.get("sp500_200d_trend") == "up",
+        "vix_low":            _v(market.get("vix"), 999) < 20,
+        "hyg_uptrend":        market.get("hyg_trend") == "up",
+        "fear_greed_ok":      _v(market.get("fear_greed_score")) > 35,
+        "vvix_calm":          _v(market.get("vvix_percentile"), 100) < 70,
     }
 
     score = sum(components.values())
@@ -55,20 +55,20 @@ def calculate_regime_score(market: dict) -> dict:
 
 def classify_regime(regime_score: int) -> dict:
     """
-    Classify the regime score into a label and position size multiplier.
+    Classify the regime score into a label.
 
-    5–6 → Good;    size = 1.00
-    3–4 → Neutral; size = 0.50
-    0–2 → Bad;     size = 0.25
+    5–6 → Good
+    3–4 → Neutral
+    0–2 → Bad
     """
     if regime_score >= 5:
-        label, size = "Good", 1.0
+        label = "Good"
     elif regime_score >= 3:
-        label, size = "Neutral", 0.5
+        label = "Neutral"
     else:
-        label, size = "Bad", 0.25
+        label = "Bad"
 
-    return {"regime_label": label, "position_size": size}
+    return {"regime_label": label}
 
 
 def score_ticker_trend(ticker: dict) -> dict:
@@ -85,10 +85,10 @@ def score_ticker_trend(ticker: dict) -> dict:
         <10   → weak / avoid
     """
     components = {
-        "above_200d_sma":    (_v(ticker["price_vs_200d_sma_pct"]) > 0, 10),
-        "200d_sma_rising":   (_v(ticker["sma_200d_direction"], "") == "up", 5),
-        "above_50d_sma":     (_v(ticker["price_vs_50d_sma_pct"]) > 0, 5),
-        "50d_sma_rising":    (_v(ticker["sma_50d_direction"], "") == "up", 5),
+        "above_200d_sma":    (_v(ticker.get("price_vs_200d_sma_pct")) > 0, 10),
+        "200d_sma_rising":   (_v(ticker.get("sma_200d_direction"), "") == "up", 5),
+        "above_50d_sma":     (_v(ticker.get("price_vs_50d_sma_pct")) > 0, 5),
+        "50d_sma_rising":    (_v(ticker.get("sma_50d_direction"), "") == "up", 5),
     }
 
     score = sum(pts for passed, pts in components.values() if passed)
@@ -123,7 +123,7 @@ def score_ticker_momentum(ticker: dict) -> dict:
         +4 if macd_histogram > 0
         +2 if macd > macd_signal_line
     """
-    rsi = _v(ticker["rsi_14"])
+    rsi = _v(ticker.get("rsi_14"))
 
     if 50 <= rsi <= 65:
         rsi_score = 8
@@ -135,9 +135,9 @@ def score_ticker_momentum(ticker: dict) -> dict:
         rsi_score = 0
 
     macd_components = {
-        "macd_crossover_bullish": (_v(ticker["macd_crossover"], "") == "bullish", 6),
-        "macd_histogram_positive": (_v(ticker["macd_histogram"]) > 0, 4),
-        "macd_above_signal": (_v(ticker["macd"]) > _v(ticker["macd_signal_line"]), 2),
+        "macd_crossover_bullish": (_v(ticker.get("macd_crossover"), "") in ("bullish", "bullish_cross"), 6),
+        "macd_histogram_positive": (_v(ticker.get("macd_histogram")) > 0, 4),
+        "macd_above_signal": (_v(ticker.get("macd")) > _v(ticker.get("macd_signal_line")), 2),
     }
     macd_score = sum(pts for passed, pts in macd_components.values() if passed)
 
@@ -164,7 +164,7 @@ def score_ticker_range_position(ticker: dict) -> dict:
         +2  if >80%      (extended / near highs)
          0  if <20%      (falling knife risk)
     """
-    pos = _v(ticker["52w_range_position_pct"])
+    pos = _v(ticker.get("52w_range_position_pct"))
 
     if 40 <= pos <= 80:
         score = 10
@@ -192,7 +192,7 @@ def score_ticker_volume(ticker: dict) -> dict:
         +5  if 0.8–1.2  (normal volume)
          0  if < 0.8    (low volume, weak conviction)
     """
-    ratio = _v(ticker["volume_vs_avg_ratio"])
+    ratio = _v(ticker.get("volume_vs_avg_ratio"))
 
     if ratio > 1.2:
         score = 10
@@ -218,7 +218,7 @@ def score_ticker_relative_strength(ticker: dict) -> dict:
         +5  if 0.98–1.02 (in-line with SPY)
          0  if < 0.98   (underperforming SPY)
     """
-    rs = _v(ticker["rs_vs_spy_20d"])
+    rs = _v(ticker.get("rs_vs_spy_20d"))
 
     if rs > 1.02:
         score = 10
@@ -331,7 +331,7 @@ def decide_ticker_action(ticker: dict, today: date = None) -> dict:
     scored = score_ticker_total(ticker, today)
     score = scored["total_score"]
 
-    if score >= 80:
+    if score >= 80:  # 80 is the maximum possible score
         primary_action = "Aggressive Buy / Add"
     elif score >= 65:
         primary_action = "Buy"
@@ -346,23 +346,23 @@ def decide_ticker_action(ticker: dict, today: date = None) -> dict:
     avoid_reasons = []
     exit_reasons = []
 
-    if _v(ticker["price_vs_50d_sma_pct"]) < -3 and _v(ticker["sma_50d_direction"], "") == "down":
+    if _v(ticker.get("price_vs_50d_sma_pct")) < -3 and _v(ticker.get("sma_50d_direction"), "") == "down":
         avoid_reasons.append("price below 50d SMA and SMA trending down")
 
-    if _v(ticker["volume_vs_avg_ratio"]) < 0.7:
+    if _v(ticker.get("volume_vs_avg_ratio")) < 0.7:
         avoid_reasons.append("volume too low (< 0.7x avg)")
 
     earnings_str = ticker.get("earnings_date")
     if earnings_str:
         days_until = (date.fromisoformat(earnings_str) - today).days
-        if 0 <= days_until <= 5:
+        if 0 <= days_until <= 7:
             avoid_reasons.append(f"earnings in {days_until} day(s)")
 
-    if _v(ticker["rsi_14"]) > 75 and _v(ticker["52w_range_position_pct"]) > 90:
+    if _v(ticker.get("rsi_14")) > 75 and _v(ticker.get("52w_range_position_pct")) > 90:
         exit_reasons.append("RSI > 75 and price near 52w high (>90%)")
 
-    if _v(ticker["macd_histogram"]) < 0 and _v(ticker["macd_crossover"], "") == "bearish":
-        exit_reasons.append("MACD histogram turned negative (bearish crossover)")
+    if _v(ticker.get("macd_histogram")) < 0 and _v(ticker.get("macd_crossover"), "") in ("bearish", "bearish_cross"):
+        exit_reasons.append("MACD histogram negative with bearish crossover")
 
     # --- resolve final action ---
     if exit_reasons:
@@ -434,9 +434,9 @@ def check_entry_timing(ticker: dict) -> dict:
     Momentum:  macd_crossover == "bullish"
                (proxy for crossover within last 3 days — tickers.json is point-in-time)
     """
-    pullback = -3.0 <= _v(ticker["price_vs_50d_sma_pct"]) <= -1.0
-    breakout = _v(ticker["volume_vs_avg_ratio"]) > 1.5 and _v(ticker["pct_from_52w_high"]) >= 0
-    momentum = _v(ticker["macd_crossover"], "") == "bullish"
+    pullback = -3.0 <= _v(ticker.get("price_vs_50d_sma_pct")) <= -1.0
+    breakout = _v(ticker.get("volume_vs_avg_ratio")) > 1.5 and _v(ticker.get("pct_from_52w_high")) >= 0
+    momentum = _v(ticker.get("macd_crossover"), "") in ("bullish", "bullish_cross")
 
     triggers = {
         "pullback": pullback,
@@ -477,6 +477,9 @@ def run(tickers: list[str], today: date = None) -> list[dict]:
         ticker = all_tickers.get(symbol)
         if ticker is None:
             results.append({"ticker": symbol, "error": "not found in tickers.json"})
+            continue
+        if "error" in ticker:
+            results.append({"ticker": symbol, "error": ticker["error"]})
             continue
 
         decision = decide_ticker_action(ticker, today)

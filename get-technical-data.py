@@ -119,8 +119,9 @@ def compute_sma_metrics(close: pd.Series, window: int) -> dict:
     pct_above = round((latest_price / latest_sma - 1) * 100, 2)
 
     # Direction: is SMA itself rising vs 5 bars ago?
-    lookback = min(6, len(sma.dropna()))
-    direction = "up" if latest_sma > float(sma.iloc[-lookback]) else "down"
+    valid_sma = sma.dropna()
+    lookback = min(6, len(valid_sma) - 1)
+    direction = "up" if lookback > 0 and latest_sma > float(valid_sma.iloc[-1 - lookback]) else None
 
     return {
         f"price_vs_{window}d_sma_pct": pct_above,
@@ -147,12 +148,14 @@ def compute_52w_range(close: pd.Series) -> dict:
 
 def compute_volume_ratio(df: pd.DataFrame, avg_window: int = 20) -> dict:
     vol = df["Volume"].squeeze()
-    avg_vol = float(vol.tail(avg_window).mean())
-    latest_vol = float(vol.iloc[-1])
-    ratio = round(latest_vol / avg_vol, 2) if avg_vol else None
+    raw_latest = vol.iloc[-1]
+    raw_avg = vol.tail(avg_window).mean()
+    latest_vol = float(raw_latest) if pd.notna(raw_latest) else None
+    avg_vol = float(raw_avg) if pd.notna(raw_avg) else None
+    ratio = round(latest_vol / avg_vol, 2) if (latest_vol is not None and avg_vol) else None
     return {
-        "volume": int(latest_vol),
-        "avg_volume_20d": int(avg_vol),
+        "volume": int(latest_vol) if latest_vol is not None else None,
+        "avg_volume_20d": int(avg_vol) if avg_vol is not None else None,
         "volume_vs_avg_ratio": ratio,
     }
 
@@ -162,7 +165,7 @@ def compute_rs_vs_spy(df_ticker: pd.DataFrame, df_spy: pd.DataFrame, window: int
     s = df_spy["Close"].squeeze()
     combined = pd.DataFrame({"ticker": t, "spy": s}).dropna()
     if len(combined) < window + 1:
-        return {"rs_vs_spy_20d": None, "rs_vs_spy_signal": None}
+        return {"rs_vs_spy_20d": None}
     t_ret = combined["ticker"].iloc[-1] / combined["ticker"].iloc[-window] - 1
     s_ret = combined["spy"].iloc[-1] / combined["spy"].iloc[-window] - 1
     rs = round((1 + t_ret) / (1 + s_ret), 4) if (1 + s_ret) != 0 else None
@@ -239,7 +242,7 @@ def get_sp500_vs_200ma(period: str = "2y") -> dict:
     vs_pct = round((price / sma_val - 1) * 100, 2)
 
     lookback = min(5, len(sma200) - 1)
-    trend = "up" if float(sma200.iloc[-1]) > float(sma200.iloc[-1 - lookback]) else "down"
+    trend = "up" if lookback > 0 and float(sma200.iloc[-1]) > float(sma200.iloc[-1 - lookback]) else "down"
 
     return {
         "sp500_price": price,
@@ -296,8 +299,9 @@ def get_hyg(period: str = "1y") -> dict:
     latest_sma = float(sma20.iloc[-1])
     vs_sma = round((price / latest_sma - 1) * 100, 2) if latest_sma else None
 
-    lookback = min(5, len(sma20.dropna()) - 1)
-    trend = "up" if latest_sma > float(sma20.iloc[-1 - lookback]) else "down"
+    valid_sma20 = sma20.dropna()
+    lookback = min(5, len(valid_sma20) - 1)
+    trend = "up" if lookback > 0 and latest_sma > float(valid_sma20.iloc[-1 - lookback]) else "down"
 
     return {
         "hyg_price": price,
@@ -437,26 +441,14 @@ def fetch_market_indicators() -> list[dict]:
     print("Fetching Fear & Greed Index...")
     fear_greed_data = get_fear_greed()
 
-    results = []
-
-    try:
-        record = {}
-
-        # Market-wide indicators
-        record.update(sp500_data)
-        record.update(vix_data)
-        record.update(vvix_data)
-        record.update(hyg_data)
-        record.update(fear_greed_data)
-        
-        print("OK")
-        results.append(record)
-
-    except Exception as e:
-        print(f"ERROR: {e}")
-        results.append({"error": str(e)})
-
-    return results
+    record = {}
+    record.update(sp500_data)
+    record.update(vix_data)
+    record.update(vvix_data)
+    record.update(hyg_data)
+    record.update(fear_greed_data)
+    print("OK")
+    return [record]
 
 
 # ---------------------------------------------------------------------------
