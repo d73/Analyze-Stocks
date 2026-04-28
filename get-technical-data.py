@@ -1,32 +1,34 @@
 """
 get-technical-data.py
 Fetches per-ticker technical indicators and market-wide sentiment data,
-writing two separate JSON files intended for downstream AI analysis.
+writing one JSON file per ticker plus a single market file.
 
-Output files:
-  output-tickers.json     — one record per ticker (fetch_ticker_data)
-  output-indicators.json  — single record of market-wide conditions (fetch_market_indicators)
+Output files (datafiles/):
+  {TICKER}.json  — one file per ticker (fetch_ticker_data)
+  market.json    — single record of market-wide conditions (fetch_market_indicators)
 
---- TICKER DATA (output-tickers.json) ---
+All output files include a generatedAt timestamp (local timezone).
+
+--- TICKER DATA ---
 Per-ticker fields pulled via yfinance:
   Price & range:
     - Current price, 52W low/high, % from each, range position (0-100)
   Momentum:
-    - RSI (14)
+    - RSI (7), RSI (14)
     - MACD (12/26/9) with histogram and crossover signal
   Moving averages:
     - Price vs 50D SMA (% above/below + direction)
     - Price vs 200D SMA (% above/below + direction)
   Volume & volatility:
     - Latest volume, 20D avg volume, volume/avg ratio
-    - ATR (14)
+    - ATR (7), ATR (14), ATR % of price for both
     - Beta (24M)
   Short interest:
     - Short % of float, days to cover
   Fundamentals:
     - Earnings date
 
---- MARKET-WIDE DATA (output-indicators.json) ---
+--- MARKET-WIDE DATA ---
 Fetched once, not tied to any individual ticker:
   - S&P 500 price, 200D SMA, % above/below, SMA trend (^GSPC)
   - VIX level + 1Y percentile rank (^VIX)
@@ -37,10 +39,11 @@ Fetched once, not tied to any individual ticker:
     put/call, VIX, junk bond demand, safe haven demand)
 
 Usage:
-    pip install yfinance pandas numpy scipy fear-greed
+    pip install yfinance pandas numpy scipy fear-greed requests-cache
     python get-technical-data.py AAPL MSFT NVDA
 """
 
+import os
 import sys
 import json
 import warnings
@@ -48,11 +51,16 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 import fear_greed as fg
-from datetime import date
+import requests_cache
+from datetime import date, datetime
 from scipy.stats import percentileofscore
 
 warnings.filterwarnings("ignore")
 TICKERS = sorted(set(t.replace(".", "-") for t in sys.argv[1:]))
+
+_CACHE_DIR    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache")
+_DATAFILES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "datafiles")
+os.makedirs(_CACHE_DIR, exist_ok=True)
 
 # ---------------------------------------------------------------------------
 # Price-history derived indicators
@@ -93,7 +101,7 @@ def compute_macd(close: pd.Series) -> dict:
     }
 
 
-def compute_atr(df: pd.DataFrame, period: int = 14) -> float | None:
+def compute_atr(df: pd.DataFrame) -> dict:
     high = df["High"].squeeze()
     low = df["Low"].squeeze()
     close = df["Close"].squeeze()
@@ -103,8 +111,15 @@ def compute_atr(df: pd.DataFrame, period: int = 14) -> float | None:
         (high - prev_close).abs(),
         (low - prev_close).abs(),
     ], axis=1).max(axis=1)
-    atr = tr.ewm(span=period, adjust=False).mean()
-    return round(float(atr.iloc[-1]), 4)
+    price = float(close.iloc[-1])
+    atr14 = round(float(tr.ewm(span=14, adjust=False).mean().iloc[-1]), 4)
+    atr7  = round(float(tr.ewm(span=7,  adjust=False).mean().iloc[-1]), 4)
+    return {
+        "atr_14":         atr14,
+        "atr_14_percent": round(atr14 / price * 100, 4) if price else None,
+        "atr_7":          atr7,
+        "atr_7_percent":  round(atr7  / price * 100, 4) if price else None,
+    }
 
 
 def compute_sma_metrics(close: pd.Series, window: int) -> dict:
@@ -320,6 +335,9 @@ def get_fear_greed() -> dict:
       fear_greed_rating  – text label, e.g. 'Extreme Fear', 'Greed'
     """
     try:
+        requests_cache.install_cache(
+            os.path.join(_CACHE_DIR, "yf_daily"), expire_after=86400
+        )
         data = fg.get()
         history = data.get("history", {})
         ind = data.get("indicators", {})
@@ -361,6 +379,8 @@ def get_fear_greed() -> dict:
             "fear_greed_junk_bond_demand_score": None,       "fear_greed_junk_bond_demand_rating": None,
             "fear_greed_safe_haven_demand_score": None,      "fear_greed_safe_haven_demand_rating": None,
         }
+    finally:
+        requests_cache.uninstall_cache()
 
 
 # ---------------------------------------------------------------------------
@@ -388,7 +408,7 @@ def fetch_ticker_data(tickers: list[str]) -> list[dict]:
 
             record = {"ticker": ticker}
 
-            # Price / info fields
+            # Price / info fields (daily)
             record.update(get_info_fields(info))
 
             # 52W range
@@ -397,23 +417,26 @@ def fetch_ticker_data(tickers: list[str]) -> list[dict]:
             # Volume vs avg
             record.update(compute_volume_ratio(df))
 
-            # RSI
-            record["rsi_14"] = compute_rsi(close)
+            # RSI-7 (daily session)
+            record["rsi_7"] = compute_rsi(close, period=7)
 
-            # MACD
+            # RSI-14
+            record["rsi_14"] = compute_rsi(close, period=14)
+
+            # MACD (daily)
             record.update(compute_macd(close))
 
-            # ATR
-            record["atr_14"] = compute_atr(df)
+            # ATR-7 and ATR-14 (daily)
+            record.update(compute_atr(df))
 
-            # SMA metrics
+            # SMA metrics (daily)
             record.update(compute_sma_metrics(close, 50))
             record.update(compute_sma_metrics(close, 200))
 
-            # Relative strength vs SPY
+            # Relative strength vs SPY (daily)
             record.update(compute_rs_vs_spy(df, spy_data))
 
-            # Earnings date
+            # Earnings date (daily)
             record["earnings_date"] = get_earnings_date(t)
 
             print("OK")
@@ -448,7 +471,7 @@ def fetch_market_indicators() -> list[dict]:
     record.update(hyg_data)
     record.update(fear_greed_data)
     print("OK")
-    return [record]
+    return record
 
 
 # ---------------------------------------------------------------------------
@@ -456,17 +479,28 @@ def fetch_market_indicators() -> list[dict]:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    print(f"\nFetching technicals for: {', '.join(TICKERS)}\n")
-    data = fetch_ticker_data(TICKERS)
-    f_tickers = "output/tickers.json"
-    with open(f_tickers, "w") as f:
-        json.dump(data, f, indent=2, default=str)
-    print(f"\nSaved to {f_tickers}")
+    generated_at = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    os.makedirs(_DATAFILES_DIR, exist_ok=True)
 
+    print(f"\nFetching technicals for: {', '.join(TICKERS)}\n")
+    ticker_records = []
+    for record in fetch_ticker_data(TICKERS):
+        record["generatedAt"] = generated_at
+        filepath = os.path.join(_DATAFILES_DIR, f"{record['ticker']}.json")
+        with open(filepath, "w") as f:
+            json.dump(record, f, indent=2, default=str)
+        # print(f"  Saved {filepath}")
+        ticker_records.append(record)
+
+    f_composite = os.path.join(_DATAFILES_DIR, "__tickers.json")
+    with open(f_composite, "w") as f:
+        json.dump(ticker_records, f, indent=2, default=str)
+    # print(f"  Saved {f_composite}")
 
     print(f"\nFetching market indicators\n")
-    data = fetch_market_indicators()
-    f_market = "output/market.json"
+    market = fetch_market_indicators()
+    market["generatedAt"] = generated_at
+    f_market = os.path.join(_DATAFILES_DIR, "__market.json")
     with open(f_market, "w") as f:
-        json.dump(data, f, indent=2, default=str)
-    print(f"\nSaved to {f_market}")
+        json.dump(market, f, indent=2, default=str)
+    # print(f"\nSaved {f_market}")

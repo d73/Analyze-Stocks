@@ -4,7 +4,7 @@ import sys
 from datetime import date
 
 TICKERS = sorted(set(t.replace(".", "-") for t in sys.argv[1:]))
-OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "output")
+DATAFILES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "datafiles")
 
 
 def _v(val, default=0):
@@ -13,12 +13,12 @@ def _v(val, default=0):
 
 
 def load_market_data() -> dict:
-    with open(os.path.join(OUTPUT_DIR, "market.json")) as f:
-        return json.load(f)[0]
+    with open(os.path.join(DATAFILES_DIR, "__market.json")) as f:
+        return json.load(f)
 
 
 def load_tickers_data() -> dict[str, dict]:
-    with open(os.path.join(OUTPUT_DIR, "tickers.json")) as f:
+    with open(os.path.join(DATAFILES_DIR, "__tickers.json")) as f:
         rows = json.load(f)
     return {row["ticker"]: row for row in rows}
 
@@ -319,11 +319,11 @@ def decide_ticker_action(ticker: dict, today: date = None) -> dict:
     Avoid Entry if any of:
         - price_vs_50d_sma_pct < -3 AND sma_50d_direction == "down"
         - volume_vs_avg_ratio < 0.7
-        - earnings_date within 5 days
+        - earnings_date within 7 days
 
     Force Exit if any of:
         - RSI > 75 AND 52w_range_position_pct > 90
-        - macd_histogram < 0 AND macd_crossover == "bearish"  (histogram turned negative)
+        - macd_histogram < 0 AND macd_crossover in ("bearish", "bearish_cross")
     """
     if today is None:
         today = date.today()
