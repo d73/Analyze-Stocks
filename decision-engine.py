@@ -4,7 +4,17 @@ import sys
 from datetime import date
 
 TICKERS = sorted(set(t.replace(".", "-") for t in sys.argv[1:]))
-DATAFILES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "datafiles")
+_DATAFILES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "datafiles")
+
+
+def _latest_run_dir() -> str:
+    subdirs = [
+        d for d in os.listdir(_DATAFILES_DIR)
+        if os.path.isdir(os.path.join(_DATAFILES_DIR, d)) and len(d) == 13
+    ]
+    if not subdirs:
+        raise FileNotFoundError(f"No run directories found in {_DATAFILES_DIR}")
+    return os.path.join(_DATAFILES_DIR, sorted(subdirs)[-1])
 
 
 def _v(val, default=0):
@@ -13,12 +23,12 @@ def _v(val, default=0):
 
 
 def load_market_data() -> dict:
-    with open(os.path.join(DATAFILES_DIR, "__market.json")) as f:
+    with open(os.path.join(_latest_run_dir(), "__market.json")) as f:
         return json.load(f)
 
 
 def load_tickers_data() -> dict[str, dict]:
-    with open(os.path.join(DATAFILES_DIR, "__tickers.json")) as f:
+    with open(os.path.join(_latest_run_dir(), "__tickers.json")) as f:
         rows = json.load(f)
     return {row["ticker"]: row for row in rows}
 

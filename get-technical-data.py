@@ -56,7 +56,7 @@ from datetime import date, datetime
 from scipy.stats import percentileofscore
 
 warnings.filterwarnings("ignore")
-TICKERS = sorted(set(t.replace(".", "-") for t in sys.argv[1:]))
+TICKERS = sorted(set(t.upper().replace(".", "-") for t in sys.argv[1:]))
 
 _CACHE_DIR    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache")
 _DATAFILES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "datafiles")
@@ -479,28 +479,28 @@ def fetch_market_indicators() -> list[dict]:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    generated_at = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
-    os.makedirs(_DATAFILES_DIR, exist_ok=True)
+    now = datetime.now().astimezone()
+    generated_at = now.strftime("%Y-%m-%d %H:%M:%S %Z")
+    run_dir = os.path.join(_DATAFILES_DIR, now.strftime("%Y-%m-%d-%H"))
+    os.makedirs(run_dir, exist_ok=True)
 
     print(f"\nFetching technicals for: {', '.join(TICKERS)}\n")
     ticker_records = []
     for record in fetch_ticker_data(TICKERS):
         record["generatedAt"] = generated_at
-        filepath = os.path.join(_DATAFILES_DIR, f"{record['ticker']}.json")
+        filepath = os.path.join(run_dir, f"{record['ticker']}.json")
         with open(filepath, "w") as f:
             json.dump(record, f, indent=2, default=str)
-        # print(f"  Saved {filepath}")
         ticker_records.append(record)
 
-    f_composite = os.path.join(_DATAFILES_DIR, "__tickers.json")
+    f_composite = os.path.join(run_dir, "__tickers.json")
     with open(f_composite, "w") as f:
         json.dump(ticker_records, f, indent=2, default=str)
-    # print(f"  Saved {f_composite}")
 
     print(f"\nFetching market indicators\n")
     market = fetch_market_indicators()
     market["generatedAt"] = generated_at
-    f_market = os.path.join(_DATAFILES_DIR, "__market.json")
+    f_market = os.path.join(run_dir, "__market.json")
     with open(f_market, "w") as f:
         json.dump(market, f, indent=2, default=str)
-    # print(f"\nSaved {f_market}")
+    print(f"\nOutput written to: {run_dir}")
