@@ -40,12 +40,12 @@ Fetched once, not tied to any individual ticker:
 
 Usage:
     pip install yfinance pandas numpy scipy fear-greed requests-cache
-    python get-technical-data.py AAPL MSFT NVDA
+    python get-technical-data.py --tickers=AAPL,MSFT,NVDA
 """
 
 import os
-import sys
 import json
+import argparse
 import warnings
 import numpy as np
 import pandas as pd
@@ -56,7 +56,25 @@ from datetime import date, datetime
 from scipy.stats import percentileofscore
 
 warnings.filterwarnings("ignore")
-TICKERS = sorted(set(t.upper().replace(".", "-") for t in sys.argv[1:]))
+
+_parser = argparse.ArgumentParser()
+_parser.add_argument("tickers_positional",      nargs="*",  default=[])
+_parser.add_argument("--tickers",               default=None)
+_parser.add_argument("--position_size",         type=int,   default=10000)
+_parser.add_argument("--short_int_pct_max",     type=float, default=0.15)
+_parser.add_argument("--dtc_max",               type=int,   default=7)
+_parser.add_argument("--vol_momentum_min",      type=float, default=0.85)
+_parser.add_argument("--earnings_window_days",  type=int,   default=7)
+args = _parser.parse_args()
+
+if args.tickers:
+    tickers = args.tickers.split(",")
+elif args.tickers_positional:
+    tickers = [t for item in args.tickers_positional for t in item.split(",")]
+else:
+    tickers = []
+
+TICKERS = sorted(set(t.upper().replace(".", "-") for t in tickers if t.strip()))
 
 _CACHE_DIR    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache")
 _DATAFILES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "datafiles")
@@ -175,16 +193,22 @@ def compute_volume_ratio(df: pd.DataFrame, avg_window: int = 20) -> dict:
     }
 
 
-def compute_rs_vs_spy(df_ticker: pd.DataFrame, df_spy: pd.DataFrame, window: int = 20) -> dict:
+def compute_rs_vs_spy(df_ticker: pd.DataFrame, df_spy: pd.DataFrame) -> dict:
     t = df_ticker["Close"].squeeze()
     s = df_spy["Close"].squeeze()
     combined = pd.DataFrame({"ticker": t, "spy": s}).dropna()
-    if len(combined) < window + 1:
-        return {"rs_vs_spy_20d": None}
-    t_ret = combined["ticker"].iloc[-1] / combined["ticker"].iloc[-window] - 1
-    s_ret = combined["spy"].iloc[-1] / combined["spy"].iloc[-window] - 1
-    rs = round((1 + t_ret) / (1 + s_ret), 4) if (1 + s_ret) != 0 else None
-    return {"rs_vs_spy_20d": rs}
+
+    def _rs(window):
+        if len(combined) < window + 1:
+            return None
+        t_ret = combined["ticker"].iloc[-1] / combined["ticker"].iloc[-window] - 1
+        s_ret = combined["spy"].iloc[-1] / combined["spy"].iloc[-window] - 1
+        return round((1 + t_ret) / (1 + s_ret), 4) if (1 + s_ret) != 0 else None
+
+    return {
+        "rs_vs_spy_10d": _rs(10),
+        "rs_vs_spy_20d": _rs(20),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +220,8 @@ def get_info_fields(info: dict) -> dict:
     short_pct = info.get("shortPercentOfFloat")
     return {
         "price": round(float(price), 2) if price else None,
+        "sector": info.get("sector"),
+        "industry": info.get("industry"),
         "beta_24m": info.get("beta"),
         "short_interest_pct_float": round(short_pct * 100, 2) if short_pct else None,
         "days_to_cover": info.get("shortRatio"),
@@ -393,8 +419,11 @@ def fetch_ticker_data(tickers: list[str]) -> list[dict]:
 
     results = []
     for ticker in tickers:
-        print(f"  {ticker}...", end=" ", flush=True)
+        print(f"  {ticker:<6}", end=" ", flush=True)
         try:
+            pass_fail = "OK"
+            fail_reasons = []
+    
             t = yf.Ticker(ticker)
             df = yf.download(ticker, period="1y", interval="1d", progress=False)
 
@@ -410,12 +439,35 @@ def fetch_ticker_data(tickers: list[str]) -> list[dict]:
 
             # Price / info fields (daily)
             record.update(get_info_fields(info))
+            industry = record.get("industry") or ""
+            if any(kw in industry for kw in ("Biotech", "Pharma", "Drug Manufacturer")):
+                fail_reasons.append(industry)
+                pass_fail = "FAIL"
+            short_pct = record.get("short_interest_pct_float")
+            if short_pct is not None and short_pct > args.short_int_pct_max * 100:
+                fail_reasons.append(f"short interest {short_pct}")
+                pass_fail = "FAIL"
+            days_to_cover = record.get("days_to_cover")
+            if days_to_cover is not None and days_to_cover > args.dtc_max:
+                fail_reasons.append(f"days to cover {days_to_cover}")
+                pass_fail = "FAIL"
 
             # 52W range
             record.update(compute_52w_range(close))
 
             # Volume vs avg
             record.update(compute_volume_ratio(df))
+            vol_momentum = record.get("volume_vs_avg_ratio")
+            if vol_momentum is not None and vol_momentum < args.vol_momentum_min:
+                fail_reasons.append(f"vol momentum {vol_momentum}")
+                pass_fail = "FAIL"
+            avg_vol = record.get("avg_volume_20d")
+            price = record.get("price")
+            if avg_vol is not None and price:
+                min_vol_liquidity = args.position_size * 100 / price
+                if avg_vol < min_vol_liquidity:
+                    fail_reasons.append(f"vol {avg_vol} < min liquidity {min_vol_liquidity:.0f}")
+                    pass_fail = "FAIL"
 
             # RSI-7 (daily session)
             record["rsi_7"] = compute_rsi(close, period=7)
@@ -425,6 +477,9 @@ def fetch_ticker_data(tickers: list[str]) -> list[dict]:
 
             # MACD (daily)
             record.update(compute_macd(close))
+            if record.get("macd_crossover") == "bearish":
+                fail_reasons.append("MACD bearish")
+                pass_fail = "FAIL"
 
             # ATR-7 and ATR-14 (daily)
             record.update(compute_atr(df))
@@ -438,9 +493,20 @@ def fetch_ticker_data(tickers: list[str]) -> list[dict]:
 
             # Earnings date (daily)
             record["earnings_date"] = get_earnings_date(t)
+            if record["earnings_date"]:
+                try:
+                    days_to_earnings = (date.fromisoformat(record["earnings_date"]) - date.today()).days
+                    if 0 < days_to_earnings < args.earnings_window_days:
+                        fail_reasons.append(f"earnings {record['earnings_date']}")
+                        pass_fail = "FAIL"
+                except ValueError:
+                    pass
 
-            print("OK")
-            results.append(record)
+            if pass_fail == "OK":
+                print(pass_fail)
+                results.append(record)
+            else:
+                print(", ".join(fail_reasons))
 
         except Exception as e:
             print(f"ERROR: {e}")
@@ -448,7 +514,7 @@ def fetch_ticker_data(tickers: list[str]) -> list[dict]:
 
     return results
 
-def fetch_market_indicators() -> list[dict]:
+def fetch_market_indicators() -> dict:
     print("Downloading S&P 500 vs 200D MA...")
     sp500_data = get_sp500_vs_200ma()
 
@@ -484,18 +550,26 @@ if __name__ == "__main__":
     run_dir = os.path.join(_DATAFILES_DIR, now.strftime("%Y-%m-%d-%H"))
     os.makedirs(run_dir, exist_ok=True)
 
-    print(f"\nFetching technicals for: {', '.join(TICKERS)}\n")
-    ticker_records = []
-    for record in fetch_ticker_data(TICKERS):
-        record["generatedAt"] = generated_at
-        filepath = os.path.join(run_dir, f"{record['ticker']}.json")
-        with open(filepath, "w") as f:
-            json.dump(record, f, indent=2, default=str)
-        ticker_records.append(record)
+    print(f"  tickers              : {', '.join(TICKERS)}")
+    print(f"  position_size        : {args.position_size}")
+    print(f"  short_int_pct_max    : {args.short_int_pct_max:.0%}")
+    print(f"  dtc_max              : {args.dtc_max}")
+    print(f"  vol_momentum_min     : {args.vol_momentum_min}")
+    print(f"  earnings_window_days : {args.earnings_window_days}")
+    print()
 
-    f_composite = os.path.join(run_dir, "__tickers.json")
-    with open(f_composite, "w") as f:
-        json.dump(ticker_records, f, indent=2, default=str)
+    if TICKERS:
+        ticker_records = []
+        for record in fetch_ticker_data(TICKERS):
+            record["generatedAt"] = generated_at
+            filepath = os.path.join(run_dir, f"{record['ticker']}.json")
+            with open(filepath, "w") as f:
+                json.dump(record, f, indent=2, default=str)
+            ticker_records.append(record)
+        passing_tickers = [r["ticker"] for r in ticker_records if "error" not in r]
+        f_composite = os.path.join(run_dir, "__tickers.json")
+        with open(f_composite, "w") as f:
+            json.dump({"tickers": passing_tickers, "records": ticker_records}, f, indent=2, default=str)
 
     print(f"\nFetching market indicators\n")
     market = fetch_market_indicators()
@@ -503,4 +577,6 @@ if __name__ == "__main__":
     f_market = os.path.join(run_dir, "__market.json")
     with open(f_market, "w") as f:
         json.dump(market, f, indent=2, default=str)
+    if TICKERS:
+        print(f"  Passing tickers ({len(passing_tickers)}): {', '.join(passing_tickers)}")
     print(f"\nOutput written to: {run_dir}")

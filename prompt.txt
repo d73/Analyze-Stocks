@@ -1,0 +1,44 @@
+Run this prompt silently, write output HTML file silently and present when done. No streaming commentary unless I explicitly ask for it
+
+POSITION SIZE = $10k
+
+I intend to hold from next market open through at latest Friday 1pm PT.
+First, analyze the current market regime and rate it Yes / Caution / Nope
+Then print give a short analysis. Use short sentence fragments and bullet points to keep content concise
+
+Eval these stocks into 3 tiers: Buy / Watch / Nope.
+Rank Buy tier from best to worst using: MACD signal strength 
+→ volume ratio → RS duration as tiebreakers.
+For each stock, also add a short analysis why. Use short sentence fragments and bullet points to keep content concise. Can be multiline.
+Rank Watch and Nope tiers alphabetically
+
+HARD EXCLUSIONS (any one = Nope):
+- Short interest >15% of float
+- Biotech / Pharma / Drug Manufacturer
+- Binary events (eg Earnings) on or before [this Friday's date]
+- Avg daily volume over last 20 days < ($POSITION-SIZE * 100 / $price)
+
+PRIMARY SIGNALS (near-mandatory for Buy):
+- MACD bullish crossover above zero line within last 3 trading days
+- 10-day avg volume > 30-day avg volume
+
+SECONDARY / CONFIRMATORY (soft filters):
+- RSI-7 between 40–70 (ideally 45–60)
+- RSI-14 <75
+
+Stocks meeting all primary signals + no exclusions = Buy
+Stocks with any exclusions =  Nope
+All else  = Watch
+
+HTML OUTPUT Format:
+dark terminal theme, IBM Plex Mono, color-coded tiers (green/yellow/red for Yes/Caution/No)
+market regime section with bullet list
+stock table with color coded ticker (green/yellow/red for Buy/Watch/No) in col 1 and bullet-per-line reason in col 2, ranked Buy / Watch / Nope, exclusion tags for Nope tier.
+use short sentence fragments
+
+eg
+<font color=green/yellow/red>Market Regime</font>
+<short market regime analysis here>\nline 2\line 3 etc 
+
+| STOCK | REASON |
+eg <font color=green/yellow/red>AAPL</font> | *Line 1\n*Line 2\n etc|
