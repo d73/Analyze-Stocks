@@ -5,7 +5,8 @@ writing one JSON file per ticker plus a single market file.
 
 Output files (datafiles/):
   {TICKER}.json  — one file per ticker (fetch_ticker_data)
-  market.json    — single record of market-wide conditions (fetch_market_indicators)
+  __market.json  — single record of market-wide conditions (fetch_market_indicators)
+  __etfs.json    — sector ETF snapshot (fetch_etf_data)
 
 All output files include a generatedAt timestamp (local timezone).
 
@@ -27,6 +28,12 @@ Per-ticker fields pulled via yfinance:
     - Short % of float, days to cover
   Fundamentals:
     - Earnings date
+
+--- SECTOR ETF DATA ---
+Fetched once for breadth / rotation context:
+  - XLK XLF XLE XLV XLI XLY XLP XLB XLU XLRE XLC
+  Per ETF: price, 52W range position, RSI-14, MACD (12/26/9),
+           % vs 20/50/200D SMA, 200D SMA trend, volume/avg ratio, RS vs SPY (10D, 20D)
 
 --- MARKET-WIDE DATA ---
 Fetched once, not tied to any individual ticker:
@@ -76,6 +83,8 @@ else:
 
 TICKERS = sorted(set(t.upper().replace(".", "-") for t in tickers if t.strip()))
 
+SECTOR_ETFS = ["XLK", "XLF", "XLE", "XLV", "XLI", "XLY", "XLP", "XLB", "XLU", "XLRE", "XLC"]
+
 _CACHE_DIR    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache")
 _DATAFILES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "datafiles")
 os.makedirs(_CACHE_DIR, exist_ok=True)
@@ -105,9 +114,9 @@ def compute_macd(close: pd.Series) -> dict:
     # Crossover: did MACD cross signal line in last 3 bars?
     h = histogram.iloc[-3:]
     if h.iloc[-1] > 0 and h.iloc[0] <= 0:
-        crossover = "bullish_cross"
+        crossover = "bullish"
     elif h.iloc[-1] < 0 and h.iloc[0] >= 0:
-        crossover = "bearish_cross"
+        crossover = "bearish"
     else:
         crossover = "bullish" if histogram.iloc[-1] > 0 else "bearish"
 
@@ -154,7 +163,7 @@ def compute_sma_metrics(close: pd.Series, window: int) -> dict:
     # Direction: is SMA itself rising vs 5 bars ago?
     valid_sma = sma.dropna()
     lookback = min(6, len(valid_sma) - 1)
-    direction = "up" if lookback > 0 and latest_sma > float(valid_sma.iloc[-1 - lookback]) else None
+    direction = "up" if lookback > 0 and latest_sma > float(valid_sma.iloc[-1 - lookback]) else "down"
 
     return {
         f"price_vs_{window}d_sma_pct": pct_above,
@@ -180,9 +189,14 @@ def compute_52w_range(close: pd.Series) -> dict:
 
 
 def compute_volume_ratio(df: pd.DataFrame, avg_window: int = 20) -> dict:
+    # Use iloc[-2] if market is open today, iloc[-1] if closed
     vol = df["Volume"].squeeze()
-    raw_latest = vol.iloc[-1]
-    raw_avg = vol.tail(avg_window).mean()
+    today = pd.Timestamp.now(tz="America/New_York").date()
+    last_bar_date = vol.index[-1].date() if hasattr(vol.index[-1], 'date') else None
+    is_today = (last_bar_date == today)
+    ref_idx = -2 if is_today else -1
+    raw_latest = vol.iloc[ref_idx]
+    raw_avg = vol.iloc[-(avg_window + (1 if is_today else 0)):ref_idx].mean()
     latest_vol = float(raw_latest) if pd.notna(raw_latest) else None
     avg_vol = float(raw_avg) if pd.notna(raw_avg) else None
     ratio = round(latest_vol / avg_vol, 2) if (latest_vol is not None and avg_vol) else None
@@ -191,6 +205,9 @@ def compute_volume_ratio(df: pd.DataFrame, avg_window: int = 20) -> dict:
         "avg_volume_20d": int(avg_vol) if avg_vol is not None else None,
         "volume_vs_avg_ratio": ratio,
     }
+
+
+
 
 
 def compute_rs_vs_spy(df_ticker: pd.DataFrame, df_spy: pd.DataFrame) -> dict:
@@ -413,9 +430,7 @@ def get_fear_greed() -> dict:
 # Main fetch loop
 # ---------------------------------------------------------------------------
 
-def fetch_ticker_data(tickers: list[str]) -> list[dict]:
-    print("Downloading SPY (relative strength baseline)...")
-    spy_data = yf.download("SPY", period="1y", interval="1d", progress=False)
+def fetch_ticker_data(tickers: list[str], spy_data: pd.DataFrame) -> list[dict]:
 
     results = []
     for ticker in tickers:
@@ -514,7 +529,10 @@ def fetch_ticker_data(tickers: list[str]) -> list[dict]:
 
     return results
 
-def fetch_market_indicators() -> dict:
+def fetch_market_indicators() -> tuple[dict, pd.DataFrame]:
+    print("Downloading SPY (relative strength baseline)...")
+    spy_data = yf.download("SPY", period="1y", interval="1d", progress=False)
+
     print("Downloading S&P 500 vs 200D MA...")
     sp500_data = get_sp500_vs_200ma()
 
@@ -537,7 +555,42 @@ def fetch_market_indicators() -> dict:
     record.update(hyg_data)
     record.update(fear_greed_data)
     print("OK")
-    return record
+    return record, spy_data
+
+
+# ---------------------------------------------------------------------------
+# Sector ETF snapshot
+# ---------------------------------------------------------------------------
+
+def fetch_etf_data(spy_data: pd.DataFrame) -> list[dict]:
+    print("Downloading sector ETFs...")
+    results = []
+    for ticker in SECTOR_ETFS:
+        print(f"  {ticker:<6}", end=" ", flush=True)
+        try:
+            df = yf.download(ticker, period="1y", interval="1d", progress=False)
+            if df.empty:
+                print("NO DATA")
+                results.append({"ticker": ticker, "error": "no_price_data"})
+                continue
+
+            close = df["Close"].squeeze()
+            record = {"ticker": ticker}
+            record["price"] = round(float(close.iloc[-1]), 2)
+            record.update(compute_52w_range(close))
+            record["rsi_14"] = compute_rsi(close, period=14)
+            record.update(compute_macd(close))
+            record.update(compute_sma_metrics(close, 20))
+            record.update(compute_sma_metrics(close, 50))
+            record.update(compute_sma_metrics(close, 200))
+            record.update(compute_volume_ratio(df))
+            record.update(compute_rs_vs_spy(df, spy_data))
+            print("OK")
+            results.append(record)
+        except Exception as e:
+            print(f"ERROR: {e}")
+            results.append({"ticker": ticker, "error": str(e)})
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -558,9 +611,25 @@ if __name__ == "__main__":
     print(f"  earnings_window_days : {args.earnings_window_days}")
     print()
 
+    print(f"Fetching market indicators\n")
+    market, spy_data = fetch_market_indicators()
+    market["generatedAt"] = generated_at
+    f_market = os.path.join(run_dir, "__market.json")
+    with open(f_market, "w") as f:
+        json.dump(market, f, indent=2, default=str)
+
+    print()
+    etf_records = fetch_etf_data(spy_data)
+    for record in etf_records:
+        record["generatedAt"] = generated_at
+    f_etfs = os.path.join(run_dir, "__etfs.json")
+    with open(f_etfs, "w") as f:
+        json.dump(etf_records, f, indent=2, default=str)
+
     if TICKERS:
+        print(f"\nFetching ticker data\n")
         ticker_records = []
-        for record in fetch_ticker_data(TICKERS):
+        for record in fetch_ticker_data(TICKERS, spy_data):
             record["generatedAt"] = generated_at
             filepath = os.path.join(run_dir, f"{record['ticker']}.json")
             with open(filepath, "w") as f:
@@ -570,13 +639,5 @@ if __name__ == "__main__":
         f_composite = os.path.join(run_dir, "__tickers.json")
         with open(f_composite, "w") as f:
             json.dump({"tickers": passing_tickers, "records": ticker_records}, f, indent=2, default=str)
-
-    print(f"\nFetching market indicators\n")
-    market = fetch_market_indicators()
-    market["generatedAt"] = generated_at
-    f_market = os.path.join(run_dir, "__market.json")
-    with open(f_market, "w") as f:
-        json.dump(market, f, indent=2, default=str)
-    if TICKERS:
         print(f"  Passing tickers ({len(passing_tickers)}): {', '.join(passing_tickers)}")
     print(f"\nOutput written to: {run_dir}")
