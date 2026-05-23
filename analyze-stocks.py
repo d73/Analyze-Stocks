@@ -379,7 +379,7 @@ def get_fear_greed() -> dict:
     """
     try:
         requests_cache.install_cache(
-            os.path.join(_CACHE_DIR, "yf_daily"), expire_after=86400
+            os.path.join(_CACHE_DIR, "yf_daily"), expire_after=1800
         )
         data = fg.get()
         history = data.get("history", {})
