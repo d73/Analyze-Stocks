@@ -41,6 +41,9 @@ Fetched once, not tied to any individual ticker:
   - VIX level + 1Y percentile rank (^VIX)
   - VVIX level + 1Y percentile rank (^VVIX)
   - HYG price, 1Y percentile, % vs 20D SMA, trend
+  - ES futures price, 1Y percentile, % vs 20D SMA, trend (ES=F)
+  - NQ futures price, 1Y percentile, % vs 20D SMA, trend (NQ=F)
+  - SOX price, 1Y percentile, % vs 20D SMA, trend (^SOX)
   - CNN Fear & Greed Index: composite score, rating, 1W/1M history,
     and all seven sub-indicators (momentum, price strength, price breadth,
     put/call, VIX, junk bond demand, safe haven demand)
@@ -283,53 +286,71 @@ def get_sp500_vs_200ma(period: str = "2y") -> dict:
       sp500_vs_200d_pct   – % above/below the 200D SMA (positive = above)
       sp500_200d_trend    – 'up' / 'down' based on SMA direction vs 5 bars ago
     """
-    df = yf.download("^GSPC", period=period, interval="1d", progress=False)
-    if df.empty:
-        return {"sp500_price": None, "sp500_200d_sma": None,
-                "sp500_vs_200d_pct": None, "sp500_200d_trend": None}
+    null = {"sp500_price": None, "sp500_200d_sma": None,
+            "sp500_vs_200d_pct": None, "sp500_200d_trend": None}
+    try:
+        df = yf.download("^GSPC", period=period, interval="1d", progress=False)
+        if df.empty:
+            return null
 
-    close = df["Close"].squeeze().dropna()
-    sma200 = close.rolling(window=200).mean().dropna()
+        close = df["Close"].squeeze().dropna()
+        if close.empty:
+            return null
+        sma200 = close.rolling(window=200).mean().dropna()
 
-    if sma200.empty:
-        return {"sp500_price": None, "sp500_200d_sma": None,
-                "sp500_vs_200d_pct": None, "sp500_200d_trend": None}
+        if sma200.empty:
+            return null
 
-    price = round(float(close.iloc[-1]), 2)
-    sma_val = round(float(sma200.iloc[-1]), 2)
-    vs_pct = round((price / sma_val - 1) * 100, 2)
+        price = round(float(close.iloc[-1]), 2)
+        sma_val = round(float(sma200.iloc[-1]), 2)
+        vs_pct = round((price / sma_val - 1) * 100, 2)
 
-    lookback = min(5, len(sma200) - 1)
-    trend = "up" if lookback > 0 and float(sma200.iloc[-1]) > float(sma200.iloc[-1 - lookback]) else "down"
+        lookback = min(5, len(sma200) - 1)
+        trend = "up" if lookback > 0 and float(sma200.iloc[-1]) > float(sma200.iloc[-1 - lookback]) else ("down" if lookback > 0 else None)
 
-    return {
-        "sp500_price": price,
-        "sp500_200d_sma": sma_val,
-        "sp500_vs_200d_pct": vs_pct,
-        "sp500_200d_trend": trend,
-    }
+        return {
+            "sp500_price": price,
+            "sp500_200d_sma": sma_val,
+            "sp500_vs_200d_pct": vs_pct,
+            "sp500_200d_trend": trend,
+        }
+    except Exception as e:
+        print(f"  ^GSPC ERROR: {e!r}")
+        return null
 
 
 def get_vix(period: str = "1y") -> dict:
     """Download ^VIX and return current level + 1Y percentile rank."""
-    df = yf.download("^VIX", period=period, interval="1d", progress=False)
-    if df.empty:
+    try:
+        df = yf.download("^VIX", period=period, interval="1d", progress=False)
+        if df.empty:
+            return {"vix": None, "vix_percentile": None}
+        close = df["Close"].squeeze().dropna()
+        if close.empty:
+            return {"vix": None, "vix_percentile": None}
+        current = round(float(close.iloc[-1]), 2)
+        percentile = round(float(percentileofscore(close, current)), 1)
+        return {"vix": current, "vix_percentile": percentile}
+    except Exception as e:
+        print(f"  ^VIX ERROR: {e!r}")
         return {"vix": None, "vix_percentile": None}
-    close = df["Close"].squeeze().dropna()
-    current = round(float(close.iloc[-1]), 2)
-    percentile = round(float(percentileofscore(close, current)), 1)
-    return {"vix": current, "vix_percentile": percentile}
 
 
 def get_vvix(period: str = "1y") -> dict:
     """Download ^VVIX and return current level + 1Y percentile rank."""
-    df = yf.download("^VVIX", period=period, interval="1d", progress=False)
-    if df.empty:
+    try:
+        df = yf.download("^VVIX", period=period, interval="1d", progress=False)
+        if df.empty:
+            return {"vvix": None, "vvix_percentile": None}
+        close = df["Close"].squeeze().dropna()
+        if close.empty:
+            return {"vvix": None, "vvix_percentile": None}
+        current = round(float(close.iloc[-1]), 2)
+        percentile = round(float(percentileofscore(close, current)), 1)
+        return {"vvix": current, "vvix_percentile": percentile}
+    except Exception as e:
+        print(f"  ^VVIX ERROR: {e!r}")
         return {"vvix": None, "vvix_percentile": None}
-    close = df["Close"].squeeze().dropna()
-    current = round(float(close.iloc[-1]), 2)
-    percentile = round(float(percentileofscore(close, current)), 1)
-    return {"vvix": current, "vvix_percentile": percentile}
 
 
 
@@ -344,29 +365,82 @@ def get_hyg(period: str = "1y") -> dict:
       hyg_vs_20d_sma    – % above/below 20D SMA (positive = above)
       hyg_trend         – 'up' / 'down' based on 20D SMA direction vs 5 bars ago
     """
-    df = yf.download("HYG", period=period, interval="1d", progress=False)
-    if df.empty:
+    try:
+        df = yf.download("HYG", period=period, interval="1d", progress=False)
+        if df.empty:
+            return {"hyg_price": None, "hyg_1y_percentile": None,
+                    "hyg_vs_20d_sma": None, "hyg_trend": None}
+
+        close = df["Close"].squeeze().dropna()
+        if close.empty:
+            return {"hyg_price": None, "hyg_1y_percentile": None,
+                    "hyg_vs_20d_sma": None, "hyg_trend": None}
+        price = round(float(close.iloc[-1]), 2)
+        percentile = round(float(percentileofscore(close, price)), 1)
+
+        sma20 = close.rolling(window=20).mean()
+        latest_sma = float(sma20.iloc[-1])
+        vs_sma = round((price / latest_sma - 1) * 100, 2) if not pd.isna(latest_sma) and latest_sma != 0 else None
+
+        valid_sma20 = sma20.dropna()
+        lookback = min(5, len(valid_sma20) - 1)
+        trend = "up" if lookback > 0 and latest_sma > float(valid_sma20.iloc[-1 - lookback]) else ("down" if lookback > 0 else None)
+
+        return {
+            "hyg_price": price,
+            "hyg_1y_percentile": percentile,
+            "hyg_vs_20d_sma": vs_sma,
+            "hyg_trend": trend,
+        }
+    except Exception as e:
+        print(f"  HYG ERROR: {e!r}")
         return {"hyg_price": None, "hyg_1y_percentile": None,
                 "hyg_vs_20d_sma": None, "hyg_trend": None}
 
-    close = df["Close"].squeeze().dropna()
-    price = round(float(close.iloc[-1]), 2)
-    percentile = round(float(percentileofscore(close, price)), 1)
 
-    sma20 = close.rolling(window=20).mean()
-    latest_sma = float(sma20.iloc[-1])
-    vs_sma = round((price / latest_sma - 1) * 100, 2) if latest_sma else None
+def _get_futures_or_index(symbol: str, prefix: str, period: str = "1y") -> dict:
+    null = {f"{prefix}_price": None, f"{prefix}_1y_percentile": None,
+            f"{prefix}_vs_20d_sma": None, f"{prefix}_trend": None}
+    try:
+        df = yf.download(symbol, period=period, interval="1d", progress=False)
+        if df.empty:
+            return null
 
-    valid_sma20 = sma20.dropna()
-    lookback = min(5, len(valid_sma20) - 1)
-    trend = "up" if lookback > 0 and latest_sma > float(valid_sma20.iloc[-1 - lookback]) else "down"
+        close = df["Close"].squeeze().dropna()
+        if close.empty:
+            return null
+        price = round(float(close.iloc[-1]), 2)
+        percentile = round(float(percentileofscore(close, price)), 1)
 
-    return {
-        "hyg_price": price,
-        "hyg_1y_percentile": percentile,
-        "hyg_vs_20d_sma": vs_sma,
-        "hyg_trend": trend,
-    }
+        sma20 = close.rolling(window=20).mean()
+        latest_sma = float(sma20.iloc[-1])
+        vs_sma = round((price / latest_sma - 1) * 100, 2) if not pd.isna(latest_sma) and latest_sma != 0 else None
+
+        valid_sma20 = sma20.dropna()
+        lookback = min(5, len(valid_sma20) - 1)
+        trend = "up" if lookback > 0 and latest_sma > float(valid_sma20.iloc[-1 - lookback]) else ("down" if lookback > 0 else None)
+
+        return {
+            f"{prefix}_price": price,
+            f"{prefix}_1y_percentile": percentile,
+            f"{prefix}_vs_20d_sma": vs_sma,
+            f"{prefix}_trend": trend,
+        }
+    except Exception as e:
+        print(f"  {symbol} ERROR: {e!r}")
+        return null
+
+
+def get_es_futures() -> dict:
+    return _get_futures_or_index("ES=F", "es_futures")
+
+
+def get_nq_futures() -> dict:
+    return _get_futures_or_index("NQ=F", "nq_futures")
+
+
+def get_sox() -> dict:
+    return _get_futures_or_index("^SOX", "sox")
 
 
 def get_fear_greed() -> dict:
@@ -447,7 +521,7 @@ def fetch_ticker_data(tickers: list[str], spy_data: pd.DataFrame) -> list[dict]:
                 results.append({"ticker": ticker, "error": "no_price_data"})
                 continue
 
-            close = df["Close"].squeeze()
+            close = df["Close"].squeeze().dropna()
             info = t.info
 
             record = {"ticker": ticker}
@@ -531,7 +605,13 @@ def fetch_ticker_data(tickers: list[str], spy_data: pd.DataFrame) -> list[dict]:
 
 def fetch_market_indicators() -> tuple[dict, pd.DataFrame]:
     print("Downloading SPY (relative strength baseline)...")
-    spy_data = yf.download("SPY", period="1y", interval="1d", progress=False)
+    try:
+        spy_data = yf.download("SPY", period="1y", interval="1d", progress=False)
+    except Exception as e:
+        print(f"  SPY ERROR: {e!r} — RS vs SPY will be null for all tickers")
+        spy_data = pd.DataFrame()
+    if spy_data.empty:
+        print("  SPY WARNING: no data returned — RS vs SPY will be null for all tickers")
 
     print("Downloading S&P 500 vs 200D MA...")
     sp500_data = get_sp500_vs_200ma()
@@ -545,6 +625,15 @@ def fetch_market_indicators() -> tuple[dict, pd.DataFrame]:
     print("Downloading HYG (credit / risk sentiment)...")
     hyg_data = get_hyg()
 
+    print("Downloading ES futures...")
+    es_data = get_es_futures()
+
+    print("Downloading NQ futures...")
+    nq_data = get_nq_futures()
+
+    print("Downloading SOX...")
+    sox_data = get_sox()
+
     print("Fetching Fear & Greed Index...")
     fear_greed_data = get_fear_greed()
 
@@ -553,6 +642,9 @@ def fetch_market_indicators() -> tuple[dict, pd.DataFrame]:
     record.update(vix_data)
     record.update(vvix_data)
     record.update(hyg_data)
+    record.update(es_data)
+    record.update(nq_data)
+    record.update(sox_data)
     record.update(fear_greed_data)
     print("OK")
     return record, spy_data
@@ -574,7 +666,7 @@ def fetch_etf_data(spy_data: pd.DataFrame) -> list[dict]:
                 results.append({"ticker": ticker, "error": "no_price_data"})
                 continue
 
-            close = df["Close"].squeeze()
+            close = df["Close"].squeeze().dropna()
             record = {"ticker": ticker}
             record["price"] = round(float(close.iloc[-1]), 2)
             record.update(compute_52w_range(close))
@@ -615,29 +707,41 @@ if __name__ == "__main__":
     market, spy_data = fetch_market_indicators()
     market["generatedAt"] = generated_at
     f_market = os.path.join(run_dir, "__market.json")
-    with open(f_market, "w") as f:
-        json.dump(market, f, indent=2, default=str)
+    try:
+        with open(f_market, "w") as f:
+            json.dump(market, f, indent=2, default=str)
+    except OSError as e:
+        print(f"  WARNING: could not write {f_market}: {e}")
 
     print()
     etf_records = fetch_etf_data(spy_data)
     for record in etf_records:
         record["generatedAt"] = generated_at
     f_etfs = os.path.join(run_dir, "__etfs.json")
-    with open(f_etfs, "w") as f:
-        json.dump(etf_records, f, indent=2, default=str)
+    try:
+        with open(f_etfs, "w") as f:
+            json.dump(etf_records, f, indent=2, default=str)
+    except OSError as e:
+        print(f"  WARNING: could not write {f_etfs}: {e}")
 
+    ticker_records = []
     if TICKERS:
         print(f"\nFetching ticker data\n")
-        ticker_records = []
         for record in fetch_ticker_data(TICKERS, spy_data):
             record["generatedAt"] = generated_at
             filepath = os.path.join(run_dir, f"{record['ticker']}.json")
-            with open(filepath, "w") as f:
-                json.dump(record, f, indent=2, default=str)
+            try:
+                with open(filepath, "w") as f:
+                    json.dump(record, f, indent=2, default=str)
+            except OSError as e:
+                print(f"  WARNING: could not write {filepath}: {e}")
             ticker_records.append(record)
-        passing_tickers = [r["ticker"] for r in ticker_records if "error" not in r]
-        f_composite = os.path.join(run_dir, "__tickers.json")
+    passing_tickers = [r["ticker"] for r in ticker_records if "error" not in r]
+    f_composite = os.path.join(run_dir, "__tickers.json")
+    try:
         with open(f_composite, "w") as f:
             json.dump({"tickers": passing_tickers, "records": ticker_records}, f, indent=2, default=str)
-        print(f"  Passing tickers ({len(passing_tickers)}): {', '.join(passing_tickers)}")
+    except OSError as e:
+        print(f"  WARNING: could not write {f_composite}: {e}")
+    print(f"  Passing tickers ({len(passing_tickers)}): {', '.join(passing_tickers)}")
     print(f"\nOutput written to: {run_dir}")
