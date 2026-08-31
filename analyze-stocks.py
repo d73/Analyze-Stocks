@@ -1,4 +1,8 @@
 """
+
+Example:
+python analyze-stocks.py --vol_momentum_min 0.5 sndk mrna dell mu stx mrvl wdc intc lite hpe mpc amd vlo panw ter ftnt amat psx lrcx ntap fix apa ddog glw tgt
+
 get-technical-data.py
 Fetches per-ticker technical indicators and market-wide sentiment data,
 writing one JSON file per ticker plus a single market file.
@@ -73,7 +77,7 @@ _parser.add_argument("--tickers",               default=None)
 _parser.add_argument("--position_size",         type=int,   default=10000)
 _parser.add_argument("--short_int_pct_max",     type=float, default=0.15)
 _parser.add_argument("--dtc_max",               type=int,   default=7)
-_parser.add_argument("--vol_momentum_min",      type=float, default=0.85)
+_parser.add_argument("--vol_momentum_min",      type=float, default=0.5)
 _parser.add_argument("--earnings_window_days",  type=int,   default=7)
 args = _parser.parse_args()
 
